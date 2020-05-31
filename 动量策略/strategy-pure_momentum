@@ -1,0 +1,211 @@
+import pandas as pd
+import datetime as datetime_1
+from datetime import datetime as datetime_2
+# 导入因子函数库
+from jqfactor import get_factor_values
+# 导入基本财务信息函数库
+from jqdata import *
+import warnings
+import math
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_style('darkgrid')
+warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('stragy_momentum')
+class stragy_momentum():
+    def __init__(self):
+        self.stocks_buy = [] # 待购买列表
+        self.day = 0 # 策略运行天数
+        self.maxholdstk = 3 # 最大持仓股票数
+        self.fundmental_step = 30 # 财务股票池更新频率
+        self.technology_step = 5 # 技术股票池更新频率
+        self.init_cash = 100000 # 初始资金
+        self.cash = self.init_cash #资金
+        self.positions = {} #持仓情况
+        self.account_share = 0 #账户份额
+        self.account_value = 0 #账户市值
+        self.records = [] #仓位情况
+        self.choose_stock = [] #仓位情况
+        self.nav = 0 #净值
+
+    '''计算可购买股票数，下取整'''
+    def _round_down(self, num, scale=100):
+        stock_num = math.floor(num / scale) * scale
+        return stock_num
+    
+    def compute_nav(self, cunrrent_date):
+        stock_share = 0
+        for key in  self.positions.keys():
+            price = self.get_stock_base_data(key, end_date=cunrrent_date, count=1)['open'].values[0]  # 获取股票价格
+            stock_share += self.positions[key] * price
+        self.account_share = stock_share
+        self.nav = self.account_share / self.init_cash  # 计算净值
+
+    '''获取仓位明细'''
+    def get_record(self):
+        df = pd.DataFrame(self.records, columns=['date', 'cach', 'account_share', 'account_value', 'nav'])
+        df.set_index('date', inplace=True)
+        df.index = pd.to_datetime(df.index)
+        return df
+    
+    def get_choose_stock_record(self):
+        df = pd.DataFrame(self.choose_stock, columns=['date', 'stocks'])
+        df.set_index('date', inplace=True)
+        df.index = pd.to_datetime(df.index)
+        return df
+
+    '''df 列之间比较'''
+    def compare_serice(self, serice_1, serice_2, flag):
+        if flag == 'max':
+            compare_flag = (serice_1 > serice_2)
+            serice_2[compare_flag] = serice_1[compare_flag]
+            return serice_2
+        if flag == 'min':
+            compare_flag = (serice_1 < serice_2)
+            serice_2[compare_flag] = serice_1[compare_flag]
+            return serice_2
+
+    '''获取股票量价'''
+    def get_stock_base_data(self, stock, start_date=None, end_date = None,  frequency='daily', panel = False, count = None):
+        stock_base_data = get_price(stock, start_date=start_date, end_date=end_date, frequency=frequency,
+                          fields=['open', 'close', 'low', 'high', 'avg', 'pre_close'],
+                          skip_paused=False, fq='pre', count=count, panel=False)
+        return stock_base_data
+
+    '''获取股票因子数据'''
+    def get_factor_values_local(self, stock_list, factors, start_date=None, end_date=None, frequence=None, count=None):
+        stock_list = list(stock_list)
+        if frequence == None:
+            return get_factor_values(stock_list, ['operating_profit_growth_rate', 'net_operate_cash_flow_to_net_debt'],
+                                     start_date=start_date, end_date=end_date, count=count)
+        if frequence == 'year':
+            factor_rerurns = {}
+            for n in range(int(count)):
+                end_date = datetime_2.strptime(end_date, '%Y-%m-%d') - datetime_1.timedelta(365 * int(n))
+                end_date = end_date.strftime('%Y-%m-%d')
+                return_factor = get_factor_values(stock_list,factors=['operating_profit_growth_rate','net_operate_cash_flow_to_net_debt'],
+                                                  start_date=start_date, end_date=end_date, count=1)
+                
+                factor = pd.DataFrame(index=stock_list)
+                for i in return_factor.keys():
+                    factor[i] = return_factor[i].iloc[0, :]
+                factor_rerurns[end_date] = factor
+            return factor_rerurns
+
+    '''下单操作'''
+    def order_target(self, stock, amount, cunrrent_date):
+        price = self.get_stock_base_data(stock, end_date=cunrrent_date, count=1)['open'].values[0]#获取股票价格
+        if amount > 0:
+            stock_num = self._round_down(amount / price)
+            logger.info('开始下单，日期{}购买股票:{}:股票数量{},股票价格:{}'.format(cunrrent_date, stock, stock_num, price))
+            share_amount = round(stock_num * price, 0)
+            self.positions[stock] = share_amount / price
+            self.account_share += share_amount
+            self.cash -= share_amount
+            self.account_value = self.account_share + self.cash
+        if amount == 0:
+            logger.info('开始下单，日期{}卖出股票:{}:股票数量{},股票价格:{}'.format(cunrrent_date, stock, self.positions[stock], price))
+            share_amount = self.positions[stock] * price
+            self.cash += share_amount
+            self.account_share -= share_amount
+            self.account_value = self.account_share + self.cash
+            del self.positions[stock]
+
+    '''财务因子选股策略'''
+    def stragy_choose_stock_financial_factor(self, cunrrent_date, stock_list):
+        cunrrent_date = cunrrent_date.strftime('%Y-%m-%d')  # 时间格式转换
+        q = query(valuation.code, valuation.day, valuation.pe_ratio, valuation.pb_ratio).filter(
+            valuation.code.in_(stock_list), valuation.market_cap > 150)
+        fundamental_data = get_fundamentals(query_object=q, date=cunrrent_date, statDate=None)  # 获取财务数据
+        
+        self.stocks_buy = list(fundamental_data['code'])
+        '''
+        factor_data_list = self.get_factor_values_local(fundamental_data['code'], ['operating_profit_growth_rate','net_operate_cash_flow_to_net_debt'],
+                                                   end_date=cunrrent_date, frequence='year', count='3') # 营业利润增长率、经营活动产生现金流量净额/净债务
+
+        factor_df = pd.DataFrame(index=stock_list, columns=['operating_profit_growth_rate', 'net_operate_cash_flow_to_net_debt'])
+        #count = 0
+        for i in factor_data_list.keys():
+            factor_df['operating_profit_growth_rate'] = factor_df['operating_profit_growth_rate'].fillna(0) + factor_data_list[i]['operating_profit_growth_rate'].astype('float64') 
+            factor_df['net_operate_cash_flow_to_net_debt'] =factor_df['net_operate_cash_flow_to_net_debt'].fillna(0) + factor_data_list[i]['net_operate_cash_flow_to_net_debt'].astype('float64') 
+        factor_df['operating_profit_growth_rate'] = factor_df['operating_profit_growth_rate'] / 3
+        factor_df['net_operate_cash_flow_to_net_debt'] = factor_df['net_operate_cash_flow_to_net_debt'] / 3
+        factor_df = factor_df[factor_df['operating_profit_growth_rate'] > 0.5]
+        self.stocks_buy = list(factor_df.index)
+        '''
+
+    '''技术因子选股策略，该策略以股价振幅为核心，配合成交量为佐证，缺陷是不能过滤股票下跌强势的股票'''
+    def stragy_choose_stock_momentum_factor(self, cunrrent_date):
+
+        price = get_price(self.stocks_buy, start_date=None, end_date=cunrrent_date, frequency='daily',
+                          fields=['open', 'close', 'low', 'high', 'avg', 'pre_close', 'volume'],
+                          skip_paused=False, fq='pre', count=250, panel=True) #获取量价数据
+        '''数据简单清洗'''
+        open_price = price.loc['open', :, :].dropna(axis=1, how='any')
+        close = price.loc['close', :, :].dropna(axis=1, how='any')
+        low = price.loc['low', :, :].dropna(axis=1, how='any')
+        high = price.loc['high', :, :].dropna(axis=1, how='any')
+        prev_close = price.loc['pre_close', :, :].dropna(axis=1, how='any')
+        volume = price.loc['volume', :, :].dropna(axis=1, how='any')
+
+        '''获取波动最大值'''
+        data_max = self.compare_serice((high - low), (pd.Series.abs(close.shift() - high)), 'max')
+        data_max = self.compare_serice(data_max, (pd.Series.abs(close.shift() - low)), 'max')
+        alpha_1 = data_max.rolling(window=6).mean().iloc[-1, :].dropna()
+
+        '''获取当日收盘幅度与最近滑动均振幅的比值，并进行百分之排序（统一量纲）'''
+        data_range = ((close - low.rolling(window=12).min()) / (
+                (high.rolling(window=12).max()) - low.rolling(window=12).min())).rank(axis=0, pct=True)
+
+        '''#获取成交量百分比排序（统一量纲）'''
+        volume_rank = volume.rank(axis=0, pct=True)
+
+        '''获取相关系数，与强势程度成反比'''
+        alpha_2 = -(data_range.iloc[-6:, :].corrwith(volume_rank.iloc[-6:, :])).dropna()
+
+        alpha = alpha_2 + alpha_1 #两个指标加权
+        self.stocks_buy = list(alpha.sort_values().iloc[-self.maxholdstk:].index)
+     
+    '''计算基准'''
+    def computor_benchmark_nav(self, index_code, start_date=None, end_date=None, count=None):
+        benchmark_data = stragy_m.get_stock_base_data('399006.XSHE', start_date=start_date, end_date=end_date)['close']
+        benchmark_nav = benchmark_data / benchmark_data[0]
+        return  benchmark_nav
+    
+    def get_stocks_condition(self, date = None, condition = '300'):
+        stocks_list = get_all_securities(types=['stock'], date=date)
+        stock_code = stocks_list.index
+        condition_stocks = [code for code in stock_code if code[0:3] == condition]
+        return condition_stocks
+
+    '''开市前操作'''
+    def before_trading(self, cunrrent_date, stock_list):
+        if self.day % self.fundmental_step == 0: #财务因子选股
+            self.stragy_choose_stock_financial_factor(cunrrent_date, stock_list)
+        if self.day % self.technology_step == 0: #技术因子选股
+            self.stragy_choose_stock_momentum_factor(cunrrent_date)
+        self.choose_stock.append((cunrrent_date, self.stocks_buy))
+        logger.info('日期{}选股股票:{}'.format(cunrrent_date, self.stocks_buy))
+
+    '''开市操作'''
+    def handle_bar(self, cunrrent_date):
+        if self.day % self.technology_step == 0:
+            holdstock = list(self.positions.keys())  # 获取持仓股票
+            logger.info('日期{}持仓股票:{}'.format(cunrrent_date, holdstock))
+            for s in holdstock:
+                if s not in self.stocks_buy:
+                    self.order_target(s, 0, cunrrent_date)
+            for s in self.stocks_buy:
+                if s not in holdstock:
+                    self.order_target(s, self.init_cash / self.maxholdstk, cunrrent_date)
+
+    '''闭市后操作'''
+    def after_trading(self, cunrrent_date):
+        self.day += 1
+        logger.info('第{}天闭市，开始计算仓位和净值:'.format(self.day))
+        self.compute_nav(cunrrent_date)  # 计算净值
+        logger.info('净值{}:'.format(self.nav))
+        logger.info('持仓情况，日期:{},账户份额:{},账户市值;{},净值:{}'.format(cunrrent_date, self.account_share, self.account_value, self.nav))
+        self.records.append((cunrrent_date, self.cash, self.account_share, self.account_value, self.nav))
+        logger.info('第{}天闭市，仓位和净值计算并记录完毕:'.format(self.day))
