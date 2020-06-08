@@ -7,7 +7,7 @@ from jqfactor import neutralize #后续迭代成private_tools中的方法
 import datetime
 import pandas as pd
 import numpy as np
-def factor_wash(current_date = '2019-05-25', stock_list = ['000728.XSHE', '000725.XSHE']):
+def factor_analyse(current_date = '2019-05-25', stock_list = ['000728.XSHE', '000725.XSHE']):
     df = pd.DataFrame()
     data = pd.DataFrame()
     try:
