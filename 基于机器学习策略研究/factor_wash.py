@@ -7,7 +7,7 @@ from jqfactor import neutralize
 import datetime
 import pandas as pd
 import numpy as np
-rom . import stragy_turtleTrade
+from . import stragy_turtleTrade
 
 tools = private_tools()
 #数据预处理
