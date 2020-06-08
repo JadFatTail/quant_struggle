@@ -1,12 +1,14 @@
 class backTestSimple():
     def __init__(self, stragy = None, tradeSys = tradeSystemSimple(), start_date = None, end_date = None, frequency = '1d', 
-                 risk_free_rate = 0.02, benchmark = None, init_cash = None):
-        self.benchmark = benchmark
+                 risk_free_rate = 0.02, init_cash = None):
+
         self.risk_free_rate = risk_free_rate
         self.start_date = start_date
         self.end_date = end_date
         self.frequency = frequency        
-        tradeSys.init_cash = init_cash
+        tradeSys.context.portfolio.init_cash = init_cash #初始化账户
+        tradeSys.context.portfolio.available_cash = init_cash #初始化账户
+        tradeSys.context.portfolio.total_value = init_cash #初始化账户
         self.tradeSys = tradeSys
         self.stragy_m = stragy
         self.index = '000001.XSHG'
@@ -15,25 +17,26 @@ class backTestSimple():
     def start(self, context):
         #获取回测频率
         stragy_m = self.stragy_m
+        context.frequency = self.frequency
         df_data = get_price(self.index, start_date = self.start_date, end_date=self.end_date, frequency = self.frequency)
         trade_frequency = df_data.index
+        stragy_m.initialize(context)
         for trade_delta in trade_frequency:
-            context.current_dt = trade_delta
-            print('test1:{}'.format(context))
-            stragy_m.initialize(context)
+            log.info('开始新的一轮，时间：{}'.format(trade_delta))
+            context.current_dt = trade_delta          
             stragy_m.before_trading(context)
             stragy_m.handle(context)
-            stragy_m.after_trading(context)
-        self.estimate()   
-        self.visualize()
+            #stragy_m.after_trading(context)
+        #self.estimate()   
+        #self.visualize()
         
     
     '''回测可视化'''
     def visualize(self):
-        df = pd.DataFrame(self.gain_recards, columns=['date', 'total_value', 'nav', 'bench_price'])
+        df = pd.DataFrame(self.tradeSys.gain_records, columns=['date', 'total_value', 'nav', 'bench_price'])
         df.set_index('date', inplace=True)
         df.index = pd.to_datetime(df.index)
-        df['bench_nav'] = df['bench_price'] / benchmark_datadf['bench_price'][0]
+        df['bench_nav'] = df['bench_price'] / df['bench_price'][0]
         plt.figure(figsize=(12,6))
         plt.plot(df.index, df['nav'], color='pink', label='策略收益')
         plt.plot(df.index, df['bench_nav'], color='red', label='基准收益')
@@ -46,7 +49,7 @@ class backTestSimple():
     
     '''策略评估目前产出：最大回撤，夏普比率，胜率，beta，alpha，待补充'''
     def estimate(self):
-        df = pd.DataFrame(self.gain_recards, columns=['date', 'total_value', 'nav', 'bench_price'])
+        df = pd.DataFrame(self.tradeSys.gain_records, columns=['date', 'total_value', 'nav', 'bench_price'])
         df.set_index('date', inplace=True)
         df.index = pd.to_datetime(df.index)
         max_down_rate, max_down_start, max_down_end = self.get_max_down(df)
@@ -71,6 +74,7 @@ class backTestSimple():
         max_down_end = max_down.index[0] #最大回撤结束日期
         return max_down, max_down_start, max_down_end
         
+    '''获取夏普比率'''    
     def get_sharp_ratio(self, df):
         '''
          夏普率衡量的是风险和收益的平衡
@@ -88,12 +92,14 @@ class backTestSimple():
         excess_income_volatility =  df['excess_income'].std()
         return excess_income_mean.div(excess_income_volatility) * np.sqrt(252)
     
+    '''计算赢率'''
     def get_win_ratio(self, df):
         
         df['income_rate'] = df['nav'].pct_change().fillna(0)
         win_num = df[df['income_rate'] > 0].shape[0]
         return win_num / df.shape[0]
-       
+    
+    '''计算beta值'''
     def get_Beta(self, df):
         '''
         计算Beta值的方式有两种
@@ -105,18 +111,23 @@ class backTestSimple():
         df['bench_rate'] = df['bench_price'].pct_change().fillna(0.0)
         return np.cov(df['income_rate'], df['bench_rate']) / np.var(df['bench_rate'])
     
+    '''计算alpha值'''
     def get_alpha(self, df):
         beta = self.get_Beta(df)
         a_return = self.aunual_return(df)
         bench_return = self.aunual_beach_return(df)
         return (a_return - self.risk_free_rate - beta(bench_return - self.risk_free_rate))
-        
+    
+    '''计算策略年化收益率'''
     def aunual_return(self, df):
         stragy_return = df['nav'][-1:]/df['nav'][0] -1
         a_return = ((stragy_return + 1) ** (250/df.shape[0]) -1)
         return a_return
     
+    '''计算基准年化收益率'''
     def aunual_beach_return(self, df):
         stragy_return = df['bench_price'][-1:]/df['bench_price'][0] -1
         a_return = ((stragy_return + 1) ** (250/df.shape[0]) -1)
         return a_return
+        
+             
