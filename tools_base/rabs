@@ -1,0 +1,29 @@
+@singleton
+class RBSAAnalysis(object):
+    def __init__(self):
+        pass
+
+    def error_func(self, w, x_train, y_train):
+        return np.sum(np.square(y_train - np.dot(x_train, w)))
+
+    def constrain1(self, w):
+        return (np.sum(w) - 1.0)
+
+    def constrain2(self, w):
+        return w
+
+    def cal_r_square(self, weight, x, y):
+        sse = self.error_func(weight, x, y)
+        sst = np.sum(np.square(y - np.mean(y)))
+        return 1 - sse / sst
+
+    def optimize(self, train_x, train_y):
+        # 约束条件
+        cons = ({'type': 'eq', 'fun': self.constrain1}, {'type': 'ineq', 'fun': self.constrain2})
+        # 初值
+        w_init = np.ones(train_x.shape[1]) / train_x.shape[1]
+        # 处理
+        res = minimize(self.error_func, w_init, args=(train_x, train_y), method='SLSQP', constraints=cons)
+        # r2
+        r_squared = self.cal_r_square(res.x, train_x, train_y)
+        return res.x, r_squared if r_squared > 0 else 0
